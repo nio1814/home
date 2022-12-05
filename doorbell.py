@@ -63,6 +63,7 @@ class DoorbellClient:
 
     self._cloud_project_id = configuration['cloud']['project_id']
     self._subscription_id = configuration['cloud']['subscription_id']
+    self._credentials_file = configuration['cloud']['credentials_file']
 
     response = get(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices', headers=self._headers())
 
@@ -76,6 +77,13 @@ class DoorbellClient:
                           "params" : {
                             'eventId': event_id
                           }}, headers=self._headers(), params={'width': 1152})
+    if response.status_code == 200:
+      response_data = response.json()
+      response = get(response_data['url'], params={'Authorization': f'Basic {response_data["token"]}'})
+      print(response)
+    else:
+      print('Generating image failed.')
+    return response
     
 
   def get_stream(self):
@@ -106,8 +114,7 @@ class DoorbellClient:
       for event_type, event_info in message['resourceUpdate']['events'].items():
         self.get_image(event_info['eventId'])
 
-    credentials = 'C:\\Users\\niioa\\git\\doorbell\\client_secret_474549681219-57pjruimq1iv88gd42osfvncf75m2al0.apps.googleusercontent.com.json'
-    with SubscriberClient(credentials=credentials) as subscriber:
+    with SubscriberClient(credentials=self._credentials_file) as subscriber:
       # name = f'projects/{self._project_id}/subscriptions/{self._subscription_id}'
       # subscriber.create_subscription(name=name, topic=self._TOPIC_NAME)
       path = subscriber.subscription_path(self._cloud_project_id, self._subscription_id)

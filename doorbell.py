@@ -20,8 +20,7 @@ class DoorbellClient:
     return {'Content-Type': 'application/json', 
             'Authorization': f'Bearer {self._access_token}'}
 
-  def __init__(self, configuration_file, directory='C:\\Users\\niioa\\Pictures\\arundel\\front'):
-    self._directory = directory
+  def __init__(self, configuration_file):
     self._device_id = ''
     self._session = None
     # self._session = OAuth2Session(self._CLIENT_ID)
@@ -31,6 +30,7 @@ class DoorbellClient:
     configuration.read(configuration_file)
     self._project_id = configuration['doorbell']['project_id']
     self._client_id = configuration['doorbell']['client_id']
+    self._directory = configuration['general']['directory']
 
     parameters = {'client_id': self._client_id,
                   'client_secret': configuration['doorbell']['client_secret'],

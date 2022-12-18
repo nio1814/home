@@ -1,15 +1,16 @@
 from argparse import ArgumentParser
 from configparser import ConfigParser
+from datetime import datetime
 from requests import get, post, Session
-from requests_oauthlib import OAuth2Session
-from google.cloud.pubsub import SubscriberClient
+from google.cloud.pubsub_v1 import SubscriberClient
 from cv2 import VideoCapture
 from datetime import datetime
+from os import environ
 from os.path import join
 from PIL import Image
-from google.oauth2 import service_account
 from json import loads
-
+from googleapiclient.discovery import build
+from google.oauth2.credentials import Credentials
 
 class DoorbellClient:
   class Operation:
@@ -23,11 +24,10 @@ class DoorbellClient:
   def __init__(self, configuration_file):
     self._device_id = ''
     self._session = None
-    # self._session = OAuth2Session(self._CLIENT_ID)
-    # token = self._session.fetch_token('https://oauth2.googleapis.com/token', client_secret=self._CLIENT_SECRET, code=authorization_code)
 
     configuration = ConfigParser()
     configuration.read(configuration_file)
+    self._directory = configuration['doorbell']['directory']
     self._project_id = configuration['doorbell']['project_id']
     self._client_id = configuration['doorbell']['client_id']
     self._directory = configuration['general']['directory']
@@ -57,7 +57,6 @@ class DoorbellClient:
 
     self._access_token = tokens['access_token']
     print(f'Access token: {self._access_token}')
-    # response = post('https://www.googleapis.com/oauth2/v4/token', params=parameters)
     self._session = Session()
     self._session.auth = {}
 
@@ -76,18 +75,18 @@ class DoorbellClient:
                     json={"command" : "sdm.devices.commands.CameraEventImage.GenerateImage", 
                           "params" : {
                             'eventId': event_id
-                          }}, headers=self._headers(), params={'width': 1152})
+                          }}, headers=self._headers())
     if response.status_code == 200:
       response_data = response.json()
       response = get(response_data['url'], params={'Authorization': f'Basic {response_data["token"]}'})
       print(response)
     else:
       print('Generating image failed.')
+      print(response.content.decode())
     return response
     
 
   def get_stream(self):
-    # response = post(f'https://developer-api.nest.com/devices/cameras/{self._device_id}/snapshot_url', headers=self._headers())
     response = post(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices/{self._device_id}:executeCommand', 
                     json={"command" : "sdm.devices.commands.CameraLiveStream.GenerateRtspStream", "params" : {} }, headers=self._headers())
     results = response.json()['results']
@@ -108,19 +107,19 @@ class DoorbellClient:
 
   def listen(self):
     def process_message(message):
-      print(f'Received {message.data!r}')
+      print(message.publish_time.strftime('%c'))
+      if (datetime.now().astimezone() - message.publish_time).seconds <= 30:
+        message_data = loads(message.data.decode())
+        for event_type, event_info in message_data['resourceUpdate']['events'].items():  
+          self.get_image(event_info['eventId'])
+      message.ack()
 
-      message = loads(message.data.decode())
-      for event_type, event_info in message['resourceUpdate']['events'].items():
-        self.get_image(event_info['eventId'])
-
-    with SubscriberClient(credentials=self._credentials_file) as subscriber:
-      # name = f'projects/{self._project_id}/subscriptions/{self._subscription_id}'
-      # subscriber.create_subscription(name=name, topic=self._TOPIC_NAME)
-      path = subscriber.subscription_path(self._cloud_project_id, self._subscription_id)
-      print(f'Listening to messages for {path}')
-      future = subscriber.subscribe(path, process_message)
-
+    environ['GOOGLE_APPLICATION_CREDENTIALS'] = self._credentials_file
+    subscriber = SubscriberClient()
+    path = subscriber.subscription_path(self._cloud_project_id, self._subscription_id)
+    print(f'Listening to messages for {path}')
+    future = subscriber.subscribe(path, process_message)
+    with subscriber:
       try:
         future.result()
       except TimeoutError:

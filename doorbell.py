@@ -9,7 +9,6 @@ from os import environ
 from os.path import join
 from PIL import Image
 from json import loads
-from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
 
 class DoorbellClient:
@@ -27,7 +26,6 @@ class DoorbellClient:
 
     configuration = ConfigParser()
     configuration.read(configuration_file)
-    self._directory = configuration['doorbell']['directory']
     self._project_id = configuration['doorbell']['project_id']
     self._client_id = configuration['doorbell']['client_id']
     self._directory = configuration['general']['directory']
@@ -56,7 +54,6 @@ class DoorbellClient:
         return
 
     self._access_token = tokens['access_token']
-    print(f'Access token: {self._access_token}')
     self._session = Session()
     self._session.auth = {}
 

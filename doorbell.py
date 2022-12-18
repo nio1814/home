@@ -11,6 +11,8 @@ from PIL import Image
 from json import loads
 from googleapiclient.discovery import build
 from google.oauth2.credentials import Credentials
+import sqlite3
+from pandas import DataFrame
 
 class DoorbellClient:
   class Operation:
@@ -30,6 +32,7 @@ class DoorbellClient:
     self._directory = configuration['doorbell']['directory']
     self._project_id = configuration['doorbell']['project_id']
     self._client_id = configuration['doorbell']['client_id']
+    self._database = configuration['general']['database']
 
     parameters = {'client_id': self._client_id,
                   'client_secret': configuration['doorbell']['client_secret'],
@@ -76,14 +79,17 @@ class DoorbellClient:
                             'eventId': event_id
                           }}, headers=self._headers())
     if response.status_code == 200:
-      response_data = response.json()
+      response_data = response.json()['results']
       response = get(response_data['url'], params={'Authorization': f'Basic {response_data["token"]}'})
       print(response)
+      if response.status_code == 200:
+        with open('image.json', 'w') as file:
+          file.write(response.content)
+      else:
+        return self.save_image()
     else:
       print('Generating image failed.')
       print(response.content.decode())
-    return response
-    
 
   def get_stream(self):
     response = post(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices/{self._device_id}:executeCommand', 
@@ -91,26 +97,38 @@ class DoorbellClient:
     results = response.json()['results']
     stream = VideoCapture(results['streamUrls']['rtspUrl'])
 
-  def save_image(self):
+  def save_image(self) -> str:
     response = post(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices/{self._device_id}:executeCommand', 
                     json={"command" : "sdm.devices.commands.CameraLiveStream.GenerateRtspStream", "params" : {} }, headers=self._headers())
     results = response.json()['results']
     stream = VideoCapture(results['streamUrls']['rtspUrl'])
-    image = stream.read()[1]
-    file_name = (datetime.now().isoformat() + '.png').replace(':', '-')
-    Image.fromarray(image[..., ::-1]).save(join(self._directory, file_name))
+    if stream.isOpened():
+      image = stream.read()[1]
+      file_name = (datetime.now().isoformat() + '.png').replace(':', '-')
+      file_path = join(self._directory, file_name)
+      Image.fromarray(image[..., ::-1]).save(file_path)
 
-    response = post(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices/{self._device_id}:executeCommand', 
-                    json={"command" : "sdm.devices.commands.CameraLiveStream.StopRtspStream", 
-                          "params" : {'streamExtensionToken': results['streamExtensionToken']} }, headers=self._headers())
+      response = post(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices/{self._device_id}:executeCommand', 
+                      json={"command" : "sdm.devices.commands.CameraLiveStream.StopRtspStream", 
+                            "params" : {'streamExtensionToken': results['streamExtensionToken']} }, headers=self._headers())
+
+      return file_path
+    else:
+      print('Failed to open stream')
 
   def listen(self):
     def process_message(message):
-      print(message.publish_time.strftime('%c'))
-      if (datetime.now().astimezone() - message.publish_time).seconds <= 30:
+      delay = (datetime.now().astimezone() - message.publish_time).seconds
+      print(f'{delay} {message.publish_time.strftime("%c")}')
+      if delay <= 30:
         message_data = loads(message.data.decode())
         for event_type, event_info in message_data['resourceUpdate']['events'].items():  
-          self.get_image(event_info['eventId'])
+          file_path = self.get_image(event_info['eventId'])
+          if file_path:
+            database = sqlite3.connect(self._database)
+            DataFrame([{'event': event_type.split('.')[-1],
+                        'time': message.publish_time.isoformat(),
+                        'image': file_path}]).to_sql('event', database, if_exists='append')
       message.ack()
 
     environ['GOOGLE_APPLICATION_CREDENTIALS'] = self._credentials_file

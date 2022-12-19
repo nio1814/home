@@ -12,6 +12,7 @@ from json import loads
 from google.oauth2.credentials import Credentials
 import sqlite3
 from pandas import DataFrame
+from time import time
 
 class DoorbellClient:
   class Operation:
@@ -30,45 +31,43 @@ class DoorbellClient:
     configuration.read(configuration_file)
     self._project_id = configuration['doorbell']['project_id']
     self._client_id = configuration['doorbell']['client_id']
+    self._client_secret = configuration['doorbell']['client_secret']
+    self._refresh_token = configuration['doorbell']['refresh_token']
     self._directory = configuration['general']['directory']
     self._database = configuration['general']['database']
-
-    parameters = {'client_id': self._client_id,
-                  'client_secret': configuration['doorbell']['client_secret'],
-                  'code': configuration['doorbell']['authorization_code'],
-                  'grant_type': 'authorization_code',
-                  'redirect_uri': 'https://www.google.com'}
-    response = post('https://oauth2.googleapis.com/token', params=parameters)
-    if response.status_code == 200:
-      tokens = response.json()
-      self._refresh_token = tokens['refresh_token']
-      print(f'Refresh token: {self._refresh_token}')
-    else:
-      parameters['grant_type'] = 'refresh_token'
-      parameters['refresh_token'] = configuration['doorbell']['refresh_token']
-      parameters.pop('code')
-      parameters.pop('redirect_uri')
-      response = post('https://oauth2.googleapis.com/token', params=parameters)
-      if response.status_code == 200:
-        tokens = response.json()
-      else:
-        print('Authorization failed.')
-        print(f'Go to: https://nestservices.google.com/partnerconnections/{self._project_id}/auth?redirect_uri=https://www.google.com&access_type=offline&prompt=consent&client_id={self._client_id}&response_type=code&scope=https://www.googleapis.com/auth/sdm.service')
-        return
-
-    self._access_token = tokens['access_token']
-    self._session = Session()
-    self._session.auth = {}
 
     self._cloud_project_id = configuration['cloud']['project_id']
     self._subscription_id = configuration['cloud']['subscription_id']
     self._credentials_file = configuration['cloud']['credentials_file']
 
+    self._authorize()
     response = get(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices', headers=self._headers())
 
     for device in response.json()['devices']:
       if device['type'] == 'sdm.devices.types.DOORBELL':
         self._device_id = device['name'].split('/')[-1]
+
+  def _authorize(self):
+    parameters = {'client_id': self._client_id,
+                  'client_secret': self._client_secret,
+                  'grant_type': 'refresh_token', 
+                  'refresh_token': self._refresh_token}
+    response = post('https://oauth2.googleapis.com/token', params=parameters)
+    if response.status_code == 200:
+      tokens = response.json()
+    else:
+      print('Authorization failed.')
+      print(f'Go to: https://nestservices.google.com/partnerconnections/{self._project_id}/auth?redirect_uri=https://www.google.com&access_type=offline&prompt=consent&client_id={self._client_id}&response_type=code&scope=https://www.googleapis.com/auth/sdm.service')
+      return
+
+    self._access_token = tokens['access_token']
+    self._expiration_time = time() + tokens['expires_in']
+
+  def _get_file_path(self, image_time, extension):
+    file_name = f'{image_time.isoformat()}'.replace(':', '-')
+    file_name += '.' + extension
+
+    return join(self._directory, file_name)
 
   def get_image(self, event_id):
     response = post(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices/{self._device_id}:executeCommand', 
@@ -78,11 +77,13 @@ class DoorbellClient:
                           }}, headers=self._headers())
     if response.status_code == 200:
       response_data = response.json()['results']
-      response = get(response_data['url'], params={'Authorization': f'Basic {response_data["token"]}'})
+      response = get(response_data['url'], headers={'Authorization': f'Basic {response_data["token"]}'}, params={'width': 1152})
       print(response)
       if response.status_code == 200:
-        with open('image.json', 'w') as file:
+        file_path = self._get_file_path(datetime.strptime(response.headers['Date'], '%a, %d %b %Y %H:%M:%S %Z'), 'jpg')
+        with open(file_path, 'wb') as file:
           file.write(response.content)
+        return file_path
       else:
         return self.save_image()
     else:
@@ -119,6 +120,8 @@ class DoorbellClient:
       delay = (datetime.now().astimezone() - message.publish_time).seconds
       print(f'{delay} {message.publish_time.strftime("%c")}')
       if delay <= 30:
+        if time() > self._expiration_time:
+          self._authorize()
         message_data = loads(message.data.decode())
         for event_type, event_info in message_data['resourceUpdate']['events'].items():  
           file_path = self.get_image(event_info['eventId'])

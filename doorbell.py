@@ -13,6 +13,8 @@ from google.oauth2.credentials import Credentials
 import sqlite3
 from pandas import DataFrame
 from time import time
+from subprocess import run
+
 
 class DoorbellClient:
   class Operation:
@@ -91,28 +93,38 @@ class DoorbellClient:
 
   def get_stream(self):
     response = post(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices/{self._device_id}:executeCommand', 
-                    json={"command" : "sdm.devices.commands.CameraLiveStream.GenerateRtspStream", "params" : {} }, headers=self._headers())
+                    json={"command" : "sdm.devices.commands.CameraLiveStream.GenerateRtspStream",
+                          "params" : {}}, headers=self._headers())
     results = response.json()['results']
-    stream = VideoCapture(results['streamUrls']['rtspUrl'])
+    
+    return results['streamUrls']['rtspUrl'], results['streamExtensionToken']
+
+  def close_stream(self, token):
+    response = post(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices/{self._device_id}:executeCommand', 
+                      json={"command" : "sdm.devices.commands.CameraLiveStream.StopRtspStream", 
+                            "params" : {'streamExtensionToken': token}}, headers=self._headers())
 
   def save_image(self) -> str:
-    response = post(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices/{self._device_id}:executeCommand', 
-                    json={"command" : "sdm.devices.commands.CameraLiveStream.GenerateRtspStream", "params" : {} }, headers=self._headers())
-    results = response.json()['results']
-    stream = VideoCapture(results['streamUrls']['rtspUrl'])
+    url, token = self.get_stream()
+    stream = VideoCapture(url)
     if stream.isOpened():
       image = stream.read()[1]
-      file_name = (datetime.now().isoformat() + '.png').replace(':', '-')
-      file_path = join(self._directory, file_name)
+      file_path = self._get_file_path(datetime.now(), 'png')
       Image.fromarray(image[..., ::-1]).save(file_path)
-
-      response = post(f'https://smartdevicemanagement.googleapis.com/v1/enterprises/{self._project_id}/devices/{self._device_id}:executeCommand', 
-                      json={"command" : "sdm.devices.commands.CameraLiveStream.StopRtspStream", 
-                            "params" : {'streamExtensionToken': results['streamExtensionToken']} }, headers=self._headers())
+      self.close_stream(token)      
 
       return file_path
     else:
       print('Failed to open stream')
+
+  def save_video(self, duration=5):
+    url, token = self.get_stream()
+    file_path = self._get_file_path(datetime.now(), 'mp4')
+    run(['ffmpeg', '-i', url, '-t', str(duration), file_path])
+    
+    self.close_stream(token)      
+
+    return file_path 
 
   def listen(self):
     def process_message(message):
@@ -131,6 +143,8 @@ class DoorbellClient:
             DataFrame([{'event': event_name,
                         'time': message.publish_time.isoformat(),
                         'image': file_path}]).to_sql('event', database, if_exists='append')
+          if event_name == 'Person':
+            self.save_video()
       message.ack()
 
     environ['GOOGLE_APPLICATION_CREDENTIALS'] = self._credentials_file

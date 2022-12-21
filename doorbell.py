@@ -78,7 +78,6 @@ class DoorbellClient:
     if response.status_code == 200:
       response_data = response.json()['results']
       response = get(response_data['url'], headers={'Authorization': f'Basic {response_data["token"]}'}, params={'width': 1152})
-      print(response)
       if response.status_code == 200:
         file_path = self._get_file_path(datetime.strptime(response.headers['Date'], '%a, %d %b %Y %H:%M:%S %Z'), 'jpg')
         with open(file_path, 'wb') as file:
@@ -123,11 +122,13 @@ class DoorbellClient:
         if time() > self._expiration_time:
           self._authorize()
         message_data = loads(message.data.decode())
-        for event_type, event_info in message_data['resourceUpdate']['events'].items():  
+        for event_type, event_info in message_data['resourceUpdate']['events'].items():
+          event_name = event_type.split('.')[-1]
+          print(f' {event_name}')
           file_path = self.get_image(event_info['eventId'])
           if file_path:
             database = sqlite3.connect(self._database)
-            DataFrame([{'event': event_type.split('.')[-1],
+            DataFrame([{'event': event_name,
                         'time': message.publish_time.isoformat(),
                         'image': file_path}]).to_sql('event', database, if_exists='append')
       message.ack()

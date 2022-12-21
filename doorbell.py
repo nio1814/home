@@ -65,9 +65,17 @@ class DoorbellClient:
     self._access_token = tokens['access_token']
     self._expiration_time = time() + tokens['expires_in']
 
-  def _get_file_path(self, image_time, extension):
-    file_name = f'{image_time.isoformat()}'.replace(':', '-')
-    file_name += '.' + extension
+  def _get_file_path(self, image_time, extension) -> str:
+    """Get the image or video file path based on the time of acquisition.
+
+    Parameters
+    ----------
+    image_time : datetime
+        The time the data was acquired.
+    extension : str
+        The output format.
+    """
+    file_name = f'{image_time.astimezone().strftime("%Y%m%d_%H%M%S_%f")}.{extension}'
 
     return join(self._directory, file_name)
 
